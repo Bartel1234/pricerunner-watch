@@ -17,9 +17,11 @@ fi
 # Only read the generated key; never execute an .env file as shell code.
 TASK_PASSWORD="$(sed -n 's/^APP_PASSWORD=//p' .env | head -n 1)"
 if [ "${#TASK_PASSWORD}" -lt 16 ]; then echo 'APP_PASSWORD i .env skal have mindst 16 tegn.'; exit 1; fi
-docker build --pull -t pricerunner-watch:0.1.0-beta.2 .
-TASK_UID="$(docker run --rm --entrypoint id pricerunner-watch:0.1.0-beta.2 -u)"
-TASK_GID="$(docker run --rm --entrypoint id pricerunner-watch:0.1.0-beta.2 -g)"
+if [ "${SKIP_BUILD:-0}" != 1 ]; then
+  docker build --pull -t pricerunner-watch:0.1.0-beta.3 .
+fi
+TASK_UID="$(docker run --rm --entrypoint id pricerunner-watch:0.1.0-beta.3 -u)"
+TASK_GID="$(docker run --rm --entrypoint id pricerunner-watch:0.1.0-beta.3 -g)"
 # Change the dedicated directory itself only; no recursive changes to unrelated files.
 chown "$TASK_UID:$TASK_GID" "$TASK_DATA_PATH"
 docker run -d --name pricerunner-watch --init --restart unless-stopped \
@@ -28,5 +30,5 @@ docker run -d --name pricerunner-watch --init --restart unless-stopped \
   -v "$TASK_DATA_PATH:/data" \
   --label 'net.unraid.docker.managed=dockerman' \
   --label "net.unraid.docker.webui=http://[IP]:[PORT:$TASK_PORT]/" \
-  pricerunner-watch:0.1.0-beta.2
+  pricerunner-watch:0.1.0-beta.3
 printf '\nInstalleret. Åbn http://DIN-UNRAID-IP:%s\nBruger: admin\nAdgangskoden står i .env i denne mappe.\n' "$TASK_PORT"

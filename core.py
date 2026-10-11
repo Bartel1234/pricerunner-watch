@@ -2,10 +2,10 @@ import re
 from decimal import Decimal
 from urllib.parse import urlsplit, urlunsplit
 
-VERSION = '0.1.0-beta.2'
+VERSION = '0.1.0-beta.3'
 DEFAULTS = {'sources': ['https://www.pricerunner.dk/cl/38/RAM'], 'max_pages': 2,
             'max_products': 24, 'delay_seconds': 8, 'interval_hours': 0,
-            'discount_percent': 35}
+            'discount_percent': 35, 'source_mode': 'adtraction', 'feed_selections': []}
 PRESETS = {'RAM': 'https://www.pricerunner.dk/cl/38/RAM',
            'Grafikkort': 'https://www.pricerunner.dk/cl/37/Grafikkort',
            'Harddiske og SSD': 'https://www.pricerunner.dk/cl/36/Harddiske'}
@@ -62,8 +62,15 @@ def candidate(offers, previous, threshold):
 
 def validate_config(data):
     c = dict(DEFAULTS)
+    c['source_mode'] = data.get('source_mode', 'adtraction')
+    if c['source_mode'] not in ('adtraction','pricerunner'): raise ValueError('Ukendt datakilde.')
+    picks = data.get('feed_selections', [])
+    if not isinstance(picks, list) or len(picks)>20: raise ValueError('Vælg højst 20 feeds.')
+    for f in picks:
+        if not isinstance(f,dict) or any(type(f.get(k)) is not int or f[k]<=0 for k in ('program_id','feed_id')): raise ValueError('Ugyldigt feedvalg.')
+    c['feed_selections'] = [{'program_id': f['program_id'], 'feed_id': f['feed_id']} for f in picks]
     c['sources'] = list(dict.fromkeys(source_url(s) for s in data.get('sources',[]) if s.strip()))
-    if not 1 <= len(c['sources']) <= 12: raise ValueError('Vælg 1–12 kilder.')
+    if not (0 <= len(c['sources']) <= 12 and (c['sources'] or c['source_mode']=='adtraction')): raise ValueError('Vælg 1–12 kilder.')
     for key,lo,hi in [('max_pages',1,100),('max_products',1,5000),('delay_seconds',5,120),('interval_hours',0,168),('discount_percent',10,90)]:
         v=data.get(key,c[key])
         if isinstance(v,bool) or not isinstance(v,int) or not lo<=v<=hi: raise ValueError(f'Ugyldig værdi for {key}: {lo}–{hi}')

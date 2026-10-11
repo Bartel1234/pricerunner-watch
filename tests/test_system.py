@@ -78,7 +78,7 @@ class System(unittest.TestCase):
         class Manager:
             def __enter__(self):return SimpleNamespace(chromium=SimpleNamespace(launch=lambda **kw:browser))
             def __exit__(self,*args):pass
-        cfg={**DEFAULTS,'interval_hours':6};self.app.save_config(cfg)
+        cfg={**DEFAULTS,'interval_hours':6,'source_mode':'pricerunner'};self.app.save_config(cfg)
         with self.app.connection() as db:run=db.execute("INSERT INTO runs(status) VALUES('kører')").lastrowid
         self.app.LOCK.acquire()
         discover={'side_effect':Blocked('Testblokering')} if blocked else {'return_value':([{'url':self.url,'name':'RAM'}],'Produktliste',None)}
@@ -95,7 +95,7 @@ class System(unittest.TestCase):
         with self.app.connection() as db:run=db.execute("INSERT INTO runs(status) VALUES('kører')").lastrowid
         self.app.LOCK.acquire()
         with patch.dict('sys.modules',{'playwright':SimpleNamespace(),'playwright.sync_api':SimpleNamespace(sync_playwright=Manager)}),patch('app.Crawler.discover',return_value=([{'url':self.url,'name':'RAM'}],'Katalog slut',1)),patch('app.Crawler.product',return_value=('RAM',self.offers(193500))),patch('app.Crawler.pause'):
-            self.app.run_scan(run,DEFAULTS)
+            self.app.run_scan(run,{**DEFAULTS,'source_mode':'pricerunner'})
         state=self.app.state()
         self.assertEqual(state['runs'][0]['status'],'færdig')
         self.assertEqual(state['runs'][0]['checked'],1)

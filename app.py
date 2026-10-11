@@ -12,6 +12,7 @@ from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 from core import VERSION, DEFAULTS, PRESETS, validate_config, product_id, candidate
 from crawler import Crawler, Blocked, Cancelled
+import adtraction
 
 DATA=Path(os.environ.get('DATA_DIR','./data'))
 DATA.mkdir(parents=True,exist_ok=True)
@@ -39,12 +40,34 @@ def init():
         CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY,run_id INTEGER,at TEXT,message TEXT);
         ''')
         db.execute('INSERT OR IGNORE INTO settings VALUES(1,?)',(json.dumps(DEFAULTS),))
+        saved=json.loads(db.execute('SELECT value FROM settings WHERE id=1').fetchone()[0])
+        if 'source_mode' not in saved:
+            saved.update(source_mode='adtraction',feed_selections=[],interval_hours=0)
+            db.execute('UPDATE settings SET value=? WHERE id=1',(json.dumps(saved),))
         db.execute("UPDATE runs SET status='afbrudt',ended=?,message='Container genstartet under scanning. Delresultater er gemt.' WHERE status='kører'",(now(),))
 
 def config():
     with connection() as db: return json.loads(db.execute('SELECT value FROM settings WHERE id=1').fetchone()[0])
 def save_config(c):
     with connection() as db: db.execute('UPDATE settings SET value=? WHERE id=1',(json.dumps(c),))
+def credentials():
+    path=DATA/'adtraction-secrets.json'
+    return json.loads(path.read_text()) if path.exists() else {}
+
+def save_credentials(data):
+    old=credentials()
+    token=data.get('token','') or old.get('token','')
+    channel=data.get('channel_id')
+    if not isinstance(token,str) or not 16<=len(token)<=256 or not token.isascii() or any(c.isspace() for c in token): raise ValueError('Indtast en gyldig API-nøgle.')
+    if type(channel) is not int or channel<=0: raise ValueError('Kanal-ID skal være et positivt heltal.')
+    path=DATA/'adtraction-secrets.json';tmp=DATA/'adtraction-secrets.tmp'
+    fd=os.open(tmp,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600)
+    with os.fdopen(fd,'w') as f: json.dump({'token':token,'channel_id':channel},f)
+    tmp.replace(path)
+    if old.get('channel_id')!=channel:
+        c=config();c['feed_selections']=[];c['interval_hours']=0;save_config(c)
+
+
 def event(run,message):
     with connection() as db:
         db.execute('INSERT INTO events(run_id,at,message) VALUES(?,?,?)',(run,now(),message))
@@ -53,17 +76,22 @@ def event(run,message):
 def update_run(run,**values):
     with connection() as db:
         db.execute('UPDATE runs SET '+','.join(k+'=?' for k in values)+' WHERE id=?',(*values.values(),run))
-def record(run,url,title,offers,threshold):
-    pid=product_id(url)
+def record(run,url,title,offers,threshold,pid=None):
+    pid=pid or product_id(url)
     available=[o['price'] for o in offers if not o['unavailable']]
     price=min(available) if available else None
     with connection() as db:
-        old=db.execute('SELECT price FROM observations WHERE product_id=? ORDER BY id DESC LIMIT 1',(pid,)).fetchone()
-        reason=candidate(offers,old['price'] if old else None,threshold)
+        old=db.execute('SELECT price,offers FROM observations WHERE product_id=? ORDER BY id DESC LIMIT 1',(pid,)).fetchone()
+        previous=old['price'] if old else None
+        if pid.startswith(('gtin:','adtraction:')) and old:
+            before={o.get('program_id') for o in json.loads(old['offers']) if not o['unavailable']}
+            after={o.get('program_id') for o in offers if not o['unavailable']}
+            if before!=after: previous=None
+        reason=candidate(offers,previous,threshold)
         db.execute('INSERT INTO products VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,url=excluded.url,last_seen=excluded.last_seen',(pid,url,title,now()))
         db.execute('INSERT INTO observations(product_id,run_id,at,price,offers,reason) VALUES(?,?,?,?,?,?)',(pid,run,now(),price,json.dumps(offers,ensure_ascii=False),reason))
 
-def run_scan(run,c):
+def run_pricerunner(run,c):
     discovered={};checked=errors=0;limited=False;browser=None;crawler=None
     try:
         from playwright.sync_api import sync_playwright
@@ -115,12 +143,64 @@ def run_scan(run,c):
         update_run(run,ended=now(),checked=checked,errors=errors)
         LOCK.release()
 
+def run_feeds(run,c):
+    checked=errors=0
+    try:
+        auth=credentials()
+        if not auth.get('token'): raise ValueError('Gem Adtraction-nøgle og kanal-ID under Indstillinger.')
+        if not c.get('feed_selections'): raise ValueError('Hent og vælg mindst ét godkendt feed under Indstillinger.')
+        allowed=adtraction.programs(auth['token'],auth['channel_id'])
+        lookup={(p['id'],f['id']):p['name'] for p in allowed for f in p['feeds']}
+        rows=[]
+        for selection in c['feed_selections']:
+            if STOP.is_set(): raise Cancelled()
+            pair=(selection['program_id'],selection['feed_id'])
+            if pair not in lookup: raise adtraction.FeedError('Et valgt feed er ikke tilgængeligt/godkendt for denne kanal. Hent feedlisten igen.')
+            event(run,'Henter godkendt feed: '+lookup[pair])
+            try:
+                raw,updated=adtraction.feed(auth['token'],auth['channel_id'],*pair)
+                count=0
+                for r in raw:
+                    if STOP.is_set(): raise Cancelled()
+                    row=adtraction.normalize(r,pair[0],lookup[pair],updated)
+                    if row: rows.append(row);count+=1
+                event(run,f'{lookup[pair]}: {len(raw)} feedrækker; {count} hardwaretilbud i DKK med gyldig pris.')
+            except adtraction.FeedError:
+                # No incomplete retailer set is committed: that could create false drops.
+                raise
+            if STOP.wait(3): raise Cancelled()
+        products=adtraction.group(rows)
+        update_run(run,discovered=len(products))
+        if not products: raise adtraction.FeedError('Ingen RAM, grafikkort, harddiske eller SSD matchede de valgte feeds. Ingen målinger gemt.')
+        for product in products.values():
+            if STOP.is_set(): raise Cancelled()
+            record(run,product['url'],product['name'],product['offers'],c['discount_percent'],product['id']);checked+=1
+            if checked%100==0: update_run(run,checked=checked)
+        event(run,f'{checked} hardwareprodukter importeret fra {len(c["feed_selections"])} feeds. Feeddata kan være forsinkede; kontrollér tilbud hos butikken.')
+        update_run(run,status='færdig')
+    except Cancelled:
+        update_run(run,status='stoppet');event(run,'Stoppet af bruger. Allerede gemte målinger bevares.')
+    except Exception as e:
+        errors=1
+        # Error strings from the API adapter are deliberately sanitized.
+        message=str(e) if isinstance(e,(adtraction.FeedError,ValueError)) else 'Intern fejl: '+type(e).__name__
+        update_run(run,status='fejl');event(run,message)
+        c['interval_hours']=0;save_config(c)
+    finally:
+        update_run(run,ended=now(),checked=checked,errors=errors)
+        LOCK.release()
+
+def run_scan(run,c):
+    if c.get('source_mode','adtraction')=='adtraction': run_feeds(run,c)
+    else: run_pricerunner(run,c)
+
+
 def start_scan():
     if not LOCK.acquire(blocking=False): return None
     try:
         STOP.clear();c=config()
         with connection() as db:
-            run=db.execute("INSERT INTO runs(started,status,message) VALUES(?,'kører','Starter browser…')",(now(),)).lastrowid
+            run=db.execute("INSERT INTO runs(started,status,message) VALUES(?,'kører','Starter datakilde…')",(now(),)).lastrowid
         threading.Thread(target=run_scan,args=(run,c),daemon=True).start()
         return run
     except Exception:
@@ -143,7 +223,8 @@ def state():
         products=[dict(r) for r in db.execute('''SELECT p.*,o.at,o.price,o.reason,o.offers,o.run_id FROM products p JOIN observations o ON o.id=(SELECT MAX(id) FROM observations WHERE product_id=p.id) ORDER BY (o.reason IS NOT NULL) DESC,o.at DESC''')]
         for r in products: r['offers']=json.loads(r['offers'])
         events=[dict(r) for r in db.execute('SELECT * FROM events ORDER BY id DESC LIMIT 30')]
-    return {'version':VERSION,'running':LOCK.locked(),'config':config(),'presets':PRESETS,'runs':runs,'products':products,'events':events}
+    auth=credentials()
+    return {'adtraction':{'configured':bool(auth.get('token')),'channel_id':auth.get('channel_id')},'version':VERSION,'running':LOCK.locked(),'config':config(),'presets':PRESETS,'runs':runs,'products':products,'events':events}
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self,format,*args): pass
@@ -190,6 +271,16 @@ class Handler(BaseHTTPRequestHandler):
                 run=start_scan()
                 return self.reply(202 if run else 409,{'run':run,'error':None if run else 'En scanning kører allerede.'})
             if self.path=='/api/stop': STOP.set();return self.reply(200,{'ok':True})
+            if self.path in ('/api/adtraction','/api/adtraction/programs'):
+                if not LOCK.acquire(blocking=False): return self.reply(409,{'error':'Stop scanning først.'})
+                try:
+                    if self.path=='/api/adtraction':
+                        save_credentials(data);return self.reply(200,{'ok':True})
+                    auth=credentials()
+                    if not auth.get('token'): raise ValueError('Gem nøgle og kanal-ID først.')
+                    return self.reply(200,{'programs':adtraction.programs(auth['token'],auth['channel_id'])})
+                except adtraction.FeedError as e: return self.reply(400,{'error':str(e)})
+                finally: LOCK.release()
             if self.path=='/api/config':
                 if not LOCK.acquire(blocking=False): return self.reply(409,{'error':'Stop scanning før ændring af indstillinger.'})
                 try: save_config(validate_config(data))

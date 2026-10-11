@@ -2,7 +2,7 @@ FROM mcr.microsoft.com/playwright/python:v1.63.0-noble
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt && mkdir -p /data && chown pwuser:pwuser /data
-COPY --chown=pwuser:pwuser app.py core.py crawler.py ./
+COPY --chown=pwuser:pwuser app.py core.py crawler.py adtraction.py ./
 COPY --chown=pwuser:pwuser templates ./templates
 USER pwuser
 ENV DATA_DIR=/data PYTHONUNBUFFERED=1

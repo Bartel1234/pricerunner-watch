@@ -5,3 +5,6 @@ data/
 __pycache__/
 *.py[cod]
 *.sqlite3*
+
+*secrets*
+backups/
