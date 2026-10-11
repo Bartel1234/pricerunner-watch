@@ -101,6 +101,30 @@ class System(unittest.TestCase):
         self.assertEqual(state['runs'][0]['checked'],1)
         self.assertEqual(state['products'][0]['price'],193500)
         self.assertFalse(self.app.LOCK.locked())
+    def test_block_evidence_saved_before_browser_closes(self):
+        closed = False
+        def read(**kw):
+            if closed: raise RuntimeError('Browser closed')
+            return 'Adgang nægtet — request blocked by security screening'
+        page=SimpleNamespace(url='https://www.pricerunner.dk/cl/38/RAM',locator=lambda _:SimpleNamespace(inner_text=read))
+        crawler=Crawler(page,DEFAULTS,threading.Event(),self.tmp.name,lambda msg:None)
+        crawler.last_status=403
+        with self.assertRaises(Blocked):crawler.guard()
+        path=__import__('pathlib').Path(self.tmp.name)/'blocked.txt'
+        self.assertTrue(path.exists())
+        before=path.read_text()
+        self.assertIn('HTTP-status: 403',before)
+        self.assertIn('Adgang nægtet',before)
+        closed=True
+        crawler.diagnostic('blocked')
+        self.assertEqual(path.read_text(),before)
+    def test_diagnostic_save_error_visible(self):
+        path=__import__('pathlib').Path(self.tmp.name)/'not-a-directory'
+        path.write_text('test')
+        messages=[]
+        crawler=Crawler(None,DEFAULTS,threading.Event(),path,messages.append)
+        crawler.diagnostic('blocked','Adgang nægtet')
+        self.assertIn('Fejlrapport kunne ikke gemmes',messages[0])
     def test_cancel_interrupts_delay(self):
         stop=threading.Event();stop.set()
         crawler=Crawler(None,DEFAULTS,stop,self.tmp.name,lambda m:None)

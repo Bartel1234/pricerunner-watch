@@ -13,6 +13,9 @@ class Crawler:
     def __init__(self, page, config, stop, diagnostic_dir, report):
         self.page,self.config,self.stop,self.report=page,config,stop,report
         self.diagnostic_dir=Path(diagnostic_dir)
+        self.last_text = None
+        self.last_url = None
+        self.last_status = None
     def check(self):
         if self.stop.is_set(): raise Cancelled()
     def pause(self):
@@ -20,14 +23,22 @@ class Crawler:
     def guard(self):
         self.check()
         text=self.page.locator('body').inner_text(timeout=15000)
+        self.last_text = text
+        self.last_url = self.page.url
         if re.search(r'verify you are human|checking your browser|adgang nægtet|access denied|unusual traffic|automated queries|bekræft.{0,20}(menneske|robot)',text,re.I):
+            self.diagnostic('blocked', text)
             raise Blocked('PriceRunner viser adgangsblokering eller menneskekontrol. Automatisk scanning er slået fra.')
         return text
     def goto(self,url):
         self.check()
+        self.last_text = None
+        self.last_url = source_url(url)
+        self.last_status = None
         response=self.page.goto(source_url(url),wait_until='domcontentloaded',timeout=45000)
+        self.last_status = response.status if response else None
         self.guard()
         if response and response.status in (403,429):
+            self.diagnostic('blocked', self.last_text)
             raise Blocked(f'HTTP {response.status}: adgang begrænset. Automatisk scanning er slået fra.')
         # The consent UI may appear after hydration; wait briefly via locator, not a fixed long sleep.
         try:
@@ -74,9 +85,21 @@ class Crawler:
         offers=parse_offers(self.page.evaluate(OFFERS))
         if not offers: raise RuntimeError('Tilbud fundet, men prisformat kunne ikke læses.')
         return title,offers
-    def diagnostic(self,label):
-        self.diagnostic_dir.mkdir(parents=True,exist_ok=True)
+    def diagnostic(self, label, text=None):
+        # Keep captured evidence usable after Playwright's context manager closes.
+        # Do not overwrite a saved blocked page with an empty closed-browser read.
         try:
-            text=self.page.locator('body').inner_text(timeout=3000)
-            (self.diagnostic_dir/(label+'.txt')).write_text(text[:100000],encoding='utf-8')
-        except Exception: pass
+            self.diagnostic_dir.mkdir(parents=True, exist_ok=True)
+            path = self.diagnostic_dir / (label + '.txt')
+            if text is None:
+                try:
+                    text = self.page.locator('body').inner_text(timeout=3000)
+                except Exception:
+                    text = self.last_text
+            if text is None:
+                if path.exists(): return
+                text = 'Sidens tekst kunne ikke læses. Se URL og HTTP-status nedenfor.'
+            report = f'URL: {self.last_url or "ukendt"}\nHTTP-status: {self.last_status or "ukendt"}\n\n{text[:100000]}'
+            path.write_text(report, encoding='utf-8')
+        except Exception as exc:
+            self.report(f'Fejlrapport kunne ikke gemmes: {type(exc).__name__}: {exc}')

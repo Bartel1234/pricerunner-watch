@@ -2,7 +2,7 @@ import re
 from decimal import Decimal
 from urllib.parse import urlsplit, urlunsplit
 
-VERSION = '0.1.0-beta.1'
+VERSION = '0.1.0-beta.2'
 DEFAULTS = {'sources': ['https://www.pricerunner.dk/cl/38/RAM'], 'max_pages': 2,
             'max_products': 24, 'delay_seconds': 8, 'interval_hours': 0,
             'discount_percent': 35}

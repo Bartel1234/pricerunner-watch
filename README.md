@@ -1,6 +1,10 @@
-# PriceRunner Watch · 0.1.0-beta.1
+# PriceRunner Watch · 0.1.0-beta.2
 
 En første, lokal PriceRunner-monitor til Unraid. Én container, Chromium, dansk webinterface og SQLite. Ingen ekstern AI-tjeneste eller API-nøgle er nødvendig.
+
+## Rettelse i beta.2
+
+Ved adgangsblokering gemmes PriceRunners sidetekst, URL og HTTP-status, før browseren lukker. Beta.1 forsøgte først at læse teksten efter lukningen og skjulte fejlen. Rapporten ligger under `diagnostics/<run-id>/blocked.txt` i datamappen. Denne rettelse ændrer ikke PriceRunners adgangskontrol.
 
 ## Status — læs dette først
 

@@ -1,7 +1,7 @@
 services:
   pricerunner-watch:
     build: .
-    image: pricerunner-watch:0.1.0-beta.1
+    image: pricerunner-watch:0.1.0-beta.2
     container_name: pricerunner-watch
     init: true
     restart: unless-stopped
