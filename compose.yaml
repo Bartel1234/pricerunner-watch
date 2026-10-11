@@ -1,0 +1,18 @@
+services:
+  pricerunner-watch:
+    build: .
+    image: pricerunner-watch:0.1.0-beta.1
+    container_name: pricerunner-watch
+    init: true
+    restart: unless-stopped
+    ports:
+      - "8788:8788"
+    environment:
+      APP_PASSWORD: ${APP_PASSWORD:?Set APP_PASSWORD in .env}
+      DATA_DIR: /data
+    volumes:
+      - ${DATA_PATH:-/mnt/user/appdata/pricerunner-watch}:/data
+    shm_size: 1gb
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
